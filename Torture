@@ -1,75 +1,55 @@
 --[[
-    ╔══════════════════════════════════════════════════════════╗
-    ║   🎯  TWEEN NEAREST FOLLOWER  v1.3                       ║
-    ║   Loadstring / Executor Ready                            ║
-    ║   Usage:                                                 ║
-    ║     loadstring(game:HttpGet("RAW_URL_HERE"))()           ║
-    ╚══════════════════════════════════════════════════════════╝
+    🎯 TWEEN FOLLOWER UI  v2.0
+    Peças: Quantum (Follow) + roblox-petsystem (Offset) + AlignPosition (Responsiveness) + Orion UI
 ]]
 
---// Anti double-execute
-if _G.__TweenFollowerLoaded then
-    pcall(function() _G.__TweenFollowerGui:Destroy() end)
-end
-_G.__TweenFollowerLoaded = true
-
---// Services
-local TweenService = game:GetService("TweenService")
-local RunService   = game:GetService("RunService")
-local Players      = game:GetService("Players")
-local CoreGui      = game:GetService("CoreGui")
-local UserInput    = game:GetService("UserInputService")
-local StarterGui   = game:GetService("StarterGui")
-
---// Safe notify
-pcall(function()
-    StarterGui:SetCore("SendNotification", {
-        Title    = "🎯 Tween Follower",
-        Text     = "Loaded! Pressione RightShift para abrir o menu",
-        Duration = 5,
-    })
-end)
+--// ============================================
+--// 1. CARREGAR ORION UI
+--// ============================================
+local OrionLib = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/Qanuir/orion-ui/refs/heads/main/source.lua"
+))()
 
 --// ============================================
---// CONFIG
+--// 2. SERVIÇOS
+--// ============================================
+local RunService = game:GetService("RunService")
+local Players    = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+--// ============================================
+--// 3. CONFIGURAÇÃO (peça: roblox-petsystem + AlignPosition)
 --// ============================================
 local Config = {
-    Enabled      = true,
-    BaseSpeed    = 25,
-    MinSpeed     = 12,
-    MaxSpeed     = 90,
-    SpeedFalloff = 8,
-    FollowRange  = 150,
-    UpdateRate   = 0.05,
-    EasingStyle  = Enum.EasingStyle.Sine,
-    EasingDir    = Enum.EasingDirection.Out,
+    Enabled       = true,
+    Mode          = "Player",      -- "Player" | "Model"
+    ModelName     = "MyPet",       -- usado se Mode = "Model"
+    PrimaryPart   = nil,           -- auto-detecta se nil
 
-    Offset = {
-        Type     = "Behind", -- Behind | Front | Above | Below | Left | Right | Diagonal
-        Distance = 8,
-        Height   = 4,
-    },
+    -- Follow (peça: Quantum)
+    BaseSpeed     = 25,
+    MinSpeed      = 8,
+    MaxSpeed      = 90,
+    Responsiveness = 0.15,         -- 0.05 = mais rápido, 0.3 = mais suave (AlignPosition)
+    LookAtTarget  = true,
 
-    LookAtTarget = true,
+    -- Offset (peça: roblox-petsystem)
+    OffsetType    = "Behind",
+    OffsetDistance = 8,
+    OffsetHeight  = 4,
 
-    -- "Player" = move o LocalPlayer / "Model" = move um Model do workspace
-    Mode        = "Player",
-    ModelName   = "MyPet",   -- nome do Model (se Mode == "Model")
-    PrimaryPart = nil,       -- auto-detecta se nil
-
-    -- Seguir somente um alvo específico (nome do player). nil = mais próximo
-    SpecificTarget = nil,
+    FollowRange   = 150,
 }
 
 --// ============================================
---// HELPERS
+--// 4. HELPERS DE OFFSET (roblox-petsystem)
 --// ============================================
 local function getOffsetPosition(rootCF)
     local look  = rootCF.LookVector
     local right = rootCF.RightVector
     local up    = Vector3.new(0, 1, 0)
     local p     = rootCF.Position
-    local t, d, h = Config.Offset.Type, Config.Offset.Distance, Config.Offset.Height
+    local t, d, h = Config.OffsetType, Config.OffsetDistance, Config.OffsetHeight
 
     if     t == "Behind"   then p = p - look  * d + up * h
     elseif t == "Front"    then p = p + look  * d + up * h
@@ -82,17 +62,16 @@ local function getOffsetPosition(rootCF)
     return p
 end
 
+--// ============================================
+--// 5. ALVO MAIS PRÓXIMO
+--// ============================================
 local function getNearestTargetCF(fromPos)
     local bestCF, bestDist = nil, Config.FollowRange
-
     for _, plr in ipairs(Players:GetPlayers()) do
         local char = plr.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if root and hum and hum.Health > 0 then
-            if Config.SpecificTarget and plr.Name ~= Config.SpecificTarget then
-                continue
-            end
             local dist = (root.Position - fromPos).Magnitude
             if dist < bestDist then
                 bestDist, bestCF = dist, root.CFrame
@@ -102,7 +81,9 @@ local function getNearestTargetCF(fromPos)
     return bestCF
 end
 
--- Retorna {part = BasePart, isModel = bool, model = Model?}
+--// ============================================
+--// 6. OBTER O "FOLLOWER" (Player ou Model)
+--// ============================================
 local function getFollowerPart()
     if Config.Mode == "Model" then
         local model = workspace:FindFirstChild(Config.ModelName, true)
@@ -110,206 +91,162 @@ local function getFollowerPart()
         local part = Config.PrimaryPart and model:FindFirstChild(Config.PrimaryPart)
                      or model.PrimaryPart
         if not part then return nil end
-        return { part = part, isModel = true, model = model }
+        return part
     else
-        local plr  = Players.LocalPlayer
-        local char = plr and plr.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root then return nil end
-        return { part = root, isModel = false }
+        local char = Players.LocalPlayer.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
     end
 end
 
 --// ============================================
---// MAIN LOOP
+--// 7. LOOP PRINCIPAL (peça: Quantum Follow + AlignPosition)
+--//    Usa CFrame:Lerp em vez de recriar Tween → estável
 --// ============================================
-local activeTween, acc = nil, 0
-
 RunService.Heartbeat:Connect(function(dt)
-    if not Config.Enabled then
-        if activeTween then activeTween:Cancel(); activeTween = nil end
-        return
-    end
-
-    acc += dt
-    if acc < Config.UpdateRate then return end
-    acc = 0
+    if not Config.Enabled then return end
 
     local follower = getFollowerPart()
     if not follower then return end
 
-    local targetCF = getNearestTargetCF(follower.part.Position)
+    local targetCF = getNearestTargetCF(follower.Position)
     if not targetCF then return end
 
     local targetPos = getOffsetPosition(targetCF)
-    local dist = (targetPos - follower.part.Position).Magnitude
-    if dist < 0.1 then return end
 
-    local speed = math.clamp(
-        Config.BaseSpeed + (dist / Config.SpeedFalloff) * 10,
-        Config.MinSpeed,
-        Config.MaxSpeed
-    )
-    local duration = math.max(dist / speed, 0.05)
+    -- CFrame de destino (com ou sem LookAt)
+    local goalCF
+    if Config.LookAtTarget then
+        goalCF = CFrame.lookAt(targetPos, targetCF.Position)
+    else
+        goalCF = CFrame.new(targetPos) * (follower.CFrame - follower.CFrame.Position)
+    end
 
-    local goalCF = Config.LookAtTarget
-        and CFrame.lookAt(targetPos, targetCF.Position)
-        or  CFrame.new(targetPos) * (follower.part.CFrame - follower.part.CFrame.Position)
+    -- Fator de suavidade (peça: AlignPosition Responsiveness)
+    -- alpha = 1 - (1 - responsiveness)^(dt * 60) → igual em qualquer FPS
+    local alpha = 1 - (1 - Config.Responsiveness) ^ (dt * 60)
 
-    if activeTween then activeTween:Cancel() end
-
-    activeTween = TweenService:Create(
-        follower.part,
-        TweenInfo.new(duration, Config.EasingStyle, Config.EasingDir),
-        { CFrame = goalCF }
-    )
-    activeTween:Play()
+    -- Interpolação suave (peça: Quantum Follow)
+    follower.CFrame = follower.CFrame:Lerp(goalCF, alpha)
 end)
 
 --// ============================================
---// GUI
+--// 8. INTERFACE (peça: Orion UI)
 --// ============================================
-local old = CoreGui:FindFirstChild("TweenFollowerGui")
-if old then old:Destroy() end
+local Window = OrionLib:MakeWindow({
+    Name = "🎯  Tween Follower  v2.0",
+    HidePremium = false,
+    SaveConfig = true,
+    ConfigFolder = "TweenFollower",
+    IntroEnabled = true,
+    IntroText = "Carregando Tween Follower...",
+})
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "TweenFollowerGui"
-gui.ResetOnSpawn = false
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = CoreGui
-_G.__TweenFollowerGui = gui
+-- Aba: Controles
+local TabMain = Window:MakeTab({ Name = "Controles", Icon = "rbxassetid://4483345998" })
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 260, 0, 380)
-frame.Position = UDim2.new(0, 30, 0.5, -190)
-frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
+TabMain:AddToggle({
+    Name = "Ativar Follow",
+    Default = Config.Enabled,
+    Callback = function(v) Config.Enabled = v end,
+})
 
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
-
-local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(70, 70, 90)
-stroke.Thickness = 1
-stroke.Parent = frame
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 40)
-title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-title.BorderSizePixel = 0
-title.Text = "🎯  TWEEN FOLLOWER  v1.3"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 14
-title.Parent = frame
-Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
-
-local list = Instance.new("Frame")
-list.Size = UDim2.new(1, -16, 1, -56)
-list.Position = UDim2.new(0, 8, 0, 48)
-list.BackgroundTransparency = 1
-list.Parent = frame
-
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = list
-
-local function makeButton(text)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 30)
-    btn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-    btn.BorderSizePixel = 0
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(230, 230, 230)
-    btn.Font = Enum.Font.Gotham
-    btn.TextSize = 13
-    btn.AutoButtonColor = true
-    btn.Parent = list
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    return btn
-end
-
--- Toggle ON/OFF
-local toggleBtn = makeButton("")
-local function refreshToggle()
-    toggleBtn.Text = Config.Enabled and "🟢  Status: ON" or "🔴  Status: OFF"
-    toggleBtn.BackgroundColor3 = Config.Enabled
-        and Color3.fromRGB(40, 120, 60)
-        or  Color3.fromRGB(120, 40, 40)
-end
-refreshToggle()
-toggleBtn.MouseButton1Click:Connect(function()
-    Config.Enabled = not Config.Enabled
-    refreshToggle()
-end)
-
--- Offset
-local offsetBtn = makeButton("")
-local offsets = { "Behind", "Front", "Above", "Below", "Left", "Right", "Diagonal" }
-local function refreshOffset() offsetBtn.Text = "Offset: " .. Config.Offset.Type end
-refreshOffset()
-offsetBtn.MouseButton1Click:Connect(function()
-    for i, v in ipairs(offsets) do
-        if v == Config.Offset.Type then
-            Config.Offset.Type = offsets[(i % #offsets) + 1]
-            break
+TabMain:AddDropdown({
+    Name = "Modo",
+    Default = Config.Mode,
+    Options = { "Player", "Model" },
+    Callback = function(v)
+        Config.Mode = v
+        if v == "Model" then
+            OrionLib:MakeNotification({
+                Name = "Modo Model",
+                Content = "Edite 'ModelName' no script ou use o campo abaixo.",
+                Time = 5,
+            })
         end
-    end
-    refreshOffset()
-end)
+    end,
+})
 
--- BaseSpeed
-local speedBtn = makeButton("")
-local function refreshSpeed() speedBtn.Text = "BaseSpeed: " .. Config.BaseSpeed end
-refreshSpeed()
-speedBtn.MouseButton1Click:Connect(function()
-    Config.BaseSpeed = Config.BaseSpeed >= 100 and 10 or Config.BaseSpeed + 10
-    refreshSpeed()
-end)
+TabMain:AddTextbox({
+    Name = "Nome do Model (se Modo = Model)",
+    Default = Config.ModelName,
+    TextDisappear = false,
+    Callback = function(v) Config.ModelName = v end,
+})
 
--- Range
-local rangeBtn = makeButton("")
-local function refreshRange() rangeBtn.Text = "Range: " .. Config.FollowRange end
-refreshRange()
-rangeBtn.MouseButton1Click:Connect(function()
-    Config.FollowRange = Config.FollowRange >= 500 and 50 or Config.FollowRange + 50
-    refreshRange()
-end)
+-- Aba: Velocidade e Offset
+local TabSpeed = Window:MakeTab({ Name = "Movimento", Icon = "rbxassetid://4483345998" })
 
--- LookAt
-local lookBtn = makeButton("")
-local function refreshLook() lookBtn.Text = "LookAt: " .. (Config.LookAtTarget and "ON" or "OFF") end
-refreshLook()
-lookBtn.MouseButton1Click:Connect(function()
-    Config.LookAtTarget = not Config.LookAtTarget
-    refreshLook()
-end)
+TabSpeed:AddSlider({
+    Name = "Velocidade Base",
+    Min = 5, Max = 100, Default = Config.BaseSpeed,
+    Color = Color3.fromRGB(0, 170, 255),
+    Callback = function(v) Config.BaseSpeed = v end,
+})
 
--- Mode Player/Model
-local modeBtn = makeButton("")
-local function refreshMode() modeBtn.Text = "Mode: " .. Config.Mode end
-refreshMode()
-modeBtn.MouseButton1Click:Connect(function()
-    Config.Mode = (Config.Mode == "Player") and "Model" or "Player"
-    refreshMode()
-end)
+TabSpeed:AddSlider({
+    Name = "Responsividade",
+    Min = 0.02, Max = 0.5, Default = Config.Responsiveness,
+    Color = Color3.fromRGB(255, 170, 0),
+    Callback = function(v) Config.Responsiveness = v end,
+})
 
--- Fechar
-local closeBtn = makeButton("❌  Fechar")
-closeBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
-closeBtn.MouseButton1Click:Connect(function()
-    if _G.__TweenFollowerGui then _G.__TweenFollowerGui:Destroy() end
-    _G.__TweenFollowerLoaded = false
-end)
+TabSpeed:AddDropdown({
+    Name = "Tipo de Offset",
+    Default = Config.OffsetType,
+    Options = { "Behind", "Front", "Above", "Below", "Left", "Right", "Diagonal" },
+    Callback = function(v) Config.OffsetType = v end,
+})
 
--- Toggle visibilidade
-UserInput.InputBegan:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.RightShift and gui.Parent then
-        frame.Visible = not frame.Visible
-    end
-end)
+TabSpeed:AddSlider({
+    Name = "Distância do Offset",
+    Min = 0, Max = 30, Default = Config.OffsetDistance,
+    Color = Color3.fromRGB(0, 255, 120),
+    Callback = function(v) Config.OffsetDistance = v end,
+})
 
-print("[TweenFollower] v1.3 carregado com sucesso ✅")
+TabSpeed:AddSlider({
+    Name = "Altura do Offset",
+    Min = -10, Max = 20, Default = Config.OffsetHeight,
+    Color = Color3.fromRGB(255, 80, 80),
+    Callback = function(v) Config.OffsetHeight = v end,
+})
+
+-- Aba: Extras
+local TabMisc = Window:MakeTab({ Name = "Extras", Icon = "rbxassetid://4483345998" })
+
+TabMisc:AddToggle({
+    Name = "Olhar para o Alvo (LookAt)",
+    Default = Config.LookAtTarget,
+    Callback = function(v) Config.LookAtTarget = v end,
+})
+
+TabMisc:AddSlider({
+    Name = "Alcance do Follow",
+    Min = 50, Max = 500, Default = Config.FollowRange,
+    Color = Color3.fromRGB(200, 100, 255),
+    Callback = function(v) Config.FollowRange = v end,
+})
+
+TabMisc:AddButton({
+    Name = "Resetar Configurações",
+    Callback = function()
+        Config.BaseSpeed = 25
+        Config.Responsiveness = 0.15
+        Config.OffsetType = "Behind"
+        Config.OffsetDistance = 8
+        Config.OffsetHeight = 4
+        Config.FollowRange = 150
+        OrionLib:MakeNotification({
+            Name = "Reset",
+            Content = "Configurações restauradas para o padrão.",
+            Time = 3,
+        })
+    end,
+})
+
+-- Notificação inicial
+OrionLib:MakeNotification({
+    Name = "✅ Tween Follower v2.0",
+    Content = "UI carregada. Use a janela para ajustar tudo em tempo real.",
+    Time = 5,
+})
